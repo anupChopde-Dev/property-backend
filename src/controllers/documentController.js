@@ -1,74 +1,35 @@
-import { asyncHandler } from '../utils/errorHandler.js';
+import { asyncHandler, ApiError } from '../utils/errorHandler.js';
 import { sendSuccess } from '../utils/response.js';
 import { documentService } from '../services/index.js';
 import { uploadDocumentSchema } from '../validators/index.js';
-import multer from 'multer';
+import { normalizeMimeType } from '../utils/tenantPhoto.js';
+import { createReadStream } from 'fs';
 import path from 'path';
-import fs from 'fs/promises';
-import { config } from '../config/index.js';
-import { v4 as uuidv4 } from 'uuid';
-
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: async (req, file, cb) => {
-    const tempDir = path.resolve('./uploads/temp');
-    await fs.mkdir(tempDir, { recursive: true });
-    cb(null, tempDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
-  },
-});
-
-const fileFilter = (req, file, cb) => {
-  if (!config.upload.allowedImageTypes.includes(file.mimetype)) {
-    return cb(new Error(`Invalid file type. Allowed: ${config.upload.allowedImageTypes.join(', ')}`));
-  }
-  cb(null, true);
-};
-
-const upload = multer({
-  storage,
-  limits: {
-    fileSize: config.upload.maxFileSize,
-  },
-  fileFilter,
-}).single('document');
 
 /**
  * POST /api/tenants/:tenantId/documents
+ * multipart/form-data with a file field ("document", "photo", ...) and imageSlot
  */
-export const uploadDocument = asyncHandler(async (req, res, next) => {
-  // Handle file upload with multer
-  upload(req, res, async (err) => {
-    if (err) {
-      return next(new Error(err.message || 'File upload failed'));
-    }
+export const uploadDocument = asyncHandler(async (req, res) => {
+  const file = (req.files || [])[0];
 
-    if (!req.file) {
-      return next(new Error('No file provided'));
-    }
+  if (!file) {
+    throw new ApiError(400, 'No file provided');
+  }
 
-    // Validate request body
-    const validatedData = uploadDocumentSchema.parse({
-      imageSlot: parseInt(req.body.imageSlot, 10),
-      originalFileName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-    });
-
-    const document = await documentService.uploadDocument(
-      req.params.tenantId,
-      req.user.id,
-      {
-        ...validatedData,
-        filePath: req.file.path,
-      }
-    );
-
-    sendSuccess(res, document, 201, 'Document uploaded');
+  const validatedData = uploadDocumentSchema.parse({
+    imageSlot: parseInt(req.body.imageSlot ?? req.body.slot ?? 1, 10),
+    originalFileName: file.originalname,
+    mimeType: normalizeMimeType(file.mimetype),
+    size: file.size,
   });
+
+  const document = await documentService.uploadDocument(req.params.tenantId, req.user.id, {
+    ...validatedData,
+    buffer: file.buffer,
+  });
+
+  sendSuccess(res, document, 201, 'Document uploaded');
 });
 
 /**
@@ -95,7 +56,7 @@ export const deleteDocument = asyncHandler(async (req, res) => {
 /**
  * GET /api/documents/:id/download
  */
-export const getDocumentDownload = asyncHandler(async (req, res, next) => {
+export const getDocumentDownload = asyncHandler(async (req, res) => {
   const result = await documentService.getDocumentDownloadUrl(
     req.params.id,
     req.user.id
@@ -108,31 +69,43 @@ export const getDocumentDownload = asyncHandler(async (req, res, next) => {
 });
 
 /**
- * GET /api/documents/:storageKey/view
- * Serve document file directly (for local storage)
+ * GET /api/documents/:id/file
+ * Streams the document inline so it can be used as a thumbnail (<img src>)
+ * or opened in a new tab. Add ?download=1 to force a download.
  */
-export const viewDocument = asyncHandler(async (req, res, next) => {
-  try {
-    // Decode the storage key from URL
-    const storageKey = decodeURIComponent(req.params.storageKey);
-
-    const fileInfo = await documentService.serveDocumentFile(storageKey);
-
-    // Determine content type
-    const ext = path.extname(storageKey).toLowerCase();
-    let contentType = 'application/octet-stream';
-    if (ext === '.jpg' || ext === '.jpeg') {
-      contentType = 'image/jpeg';
-    } else if (ext === '.png') {
-      contentType = 'image/png';
-    }
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `inline; filename="${path.basename(storageKey)}"`);
-
-    const fileStream = require('fs').createReadStream(fileInfo.path);
-    fileStream.pipe(res);
-  } catch (error) {
-    next(error);
-  }
+export const getDocumentFile = asyncHandler(async (req, res) => {
+  const file = await documentService.getDocumentFile(req.params.id, req.user.id);
+  streamDocument(req, res, file);
 });
+
+/**
+ * GET /api/documents/:storageKey/view
+ * Legacy endpoint that serves a document by its storage key.
+ */
+export const viewDocument = asyncHandler(async (req, res) => {
+  // Express already decodes route params, so use the value as-is
+  const file = await documentService.serveDocumentFile(req.params.storageKey, req.user.id);
+  streamDocument(req, res, file);
+});
+
+const streamDocument = (req, res, { path: filePath, mimeType, originalFileName }) => {
+  const fileName = originalFileName ? path.basename(originalFileName) : path.basename(filePath);
+  const disposition = req.query.download === '1' || req.query.download === 'true'
+    ? 'attachment'
+    : 'inline';
+
+  res.setHeader('Content-Type', mimeType || 'application/octet-stream');
+  res.setHeader('Content-Disposition', `${disposition}; filename="${fileName}"`);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+
+  const fileStream = createReadStream(filePath);
+  fileStream.on('error', () => {
+    if (!res.headersSent) {
+      res.status(404).json({ success: false, message: 'Document not found' });
+    } else {
+      res.end();
+    }
+  });
+
+  fileStream.pipe(res);
+};

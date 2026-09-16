@@ -1,5 +1,6 @@
 import { Room, Property, Tenant, TenantMember, RentCharge, RentPayment, ElectricityReading, Expense } from '../models/index.js';
 import { ApiError } from '../utils/errorHandler.js';
+import { buildTenantResponse } from './tenantService.js';
 
 /**
  * Get all rooms across all owner's properties (with property + tenant info)
@@ -104,12 +105,12 @@ export const getRoomById = async (roomId, ownerId) => {
     throw new ApiError(404, 'Room not found');
   }
 
-  // Populate current tenant info
+  // Populate current tenant info (with photo thumbnail)
   const currentTenant = await Tenant.findOne({ room: room._id, status: 'ACTIVE' });
 
   return {
     room: room.toJSON(),
-    currentTenant: currentTenant ? currentTenant.toJSON() : null,
+    currentTenant: buildTenantResponse(currentTenant),
   };
 };
 
@@ -173,8 +174,9 @@ export const getRoomDashboard = async (roomId, ownerId, billingMonth = null) => 
     billingMonth,
   });
 
-  // Get tenant history
+  // Get tenant history (with photo thumbnail info)
   const history = await Tenant.find({ room: room._id }).sort({ joiningDate: -1 });
+  const historyWithPhoto = history.map(buildTenantResponse);
 
   // Get room expenses
   const expenses = await Expense.find({ room: room._id }).sort({ date: -1 }).limit(10);
@@ -192,7 +194,7 @@ export const getRoomDashboard = async (roomId, ownerId, billingMonth = null) => 
       payments: rentCharge ? await RentPayment.find({ rentCharge: rentCharge._id }).sort({ paymentDate: -1 }) : [],
     },
     electricity: electricityReading ? electricityReading.toJSON() : null,
-    history,
+    history: historyWithPhoto,
     expenses,
   };
 };

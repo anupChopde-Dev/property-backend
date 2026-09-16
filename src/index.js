@@ -52,8 +52,9 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Request logging (development only)
 app.use(requestLogger);
 
-// Static files for document viewing (local storage)
-app.use('/uploads', express.static('./uploads'));
+// Note: uploaded tenant documents live in ./uploads/documents and are private.
+// They are served through the authenticated /api/documents/:id/file endpoint,
+// so the uploads directory is intentionally NOT exposed as static files.
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -93,12 +94,10 @@ const startServer = async () => {
     const fs = await import('fs/promises');
     const path = await import('path');
     const uploadsDir = path.resolve('./uploads');
-    const tempDir = path.resolve('./uploads/temp');
     const docsDir = path.resolve('./uploads/documents');
 
     try {
       await fs.mkdir(uploadsDir, { recursive: true });
-      await fs.mkdir(tempDir, { recursive: true });
       await fs.mkdir(docsDir, { recursive: true });
     } catch (dirError) {
       console.warn('Could not create uploads directories:', dirError.message);

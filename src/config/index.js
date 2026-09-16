@@ -1,8 +1,15 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+const port = parseInt(process.env.PORT, 10) || 3001;
+
+// Base URL of this API. Used to build absolute file URLs that can be used
+// directly in <img src> / new-tab navigation by the frontend.
+const apiBaseUrl = (process.env.API_BASE_URL || `http://localhost:${port}`).replace(/\/+$/, '');
+
 export const config = {
-  port: process.env.PORT || 3001,
+  port,
+  apiBaseUrl,
   nodeEnv: process.env.NODE_ENV || 'development',
 
   mongoUri: process.env.MONGODB_URI || 'mongodb://localhost:27017/property-management',
