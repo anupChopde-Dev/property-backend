@@ -1,8 +1,30 @@
-import { Tenant, TenantMember, TenantDocument, Room, Property } from '../models/index.js';
+import { Tenant, TenantMember, Room, Property } from '../models/index.js';
 import { ApiError } from '../utils/errorHandler.js';
 
 /**
- * Create a tenant (room holder)
+ * Build the tenant payload sent to clients: the embedded photo buffer is
+ * replaced by a flag plus a URL the frontend can render as a thumbnail.
+ */
+export const buildTenantResponse = (tenant) => {
+  if (!tenant) return null;
+
+  const plain = tenant && typeof tenant.toJSON === 'function' ? tenant.toJSON() : { ...tenant };
+  const id = String(plain._id);
+  const hasPhoto = !!(plain.hasPhoto || (plain.photo && (plain.photo.data || plain.photo.mimeType)));
+
+  delete plain.photo;
+
+  return {
+    ...plain,
+    hasPhoto,
+    // Relative to the API base URL, same convention as the document URLs
+    photoUrl: hasPhoto ? `/api/tenants/${id}/photo` : null,
+  };
+};
+
+/**
+ * Create a tenant (room holder).
+ * `photoPayload` is the optional single photo of the tenant, embedded in MongoDB.
  */
 export const createTenant = async (ownerId, tenantData, photoPayload) => {
   const { room, fullName, mobile, email, permanentAddress, occupation, joiningDate, notes } = tenantData;
@@ -36,7 +58,7 @@ export const createTenant = async (ownerId, tenantData, photoPayload) => {
   roomDoc.status = 'OCCUPIED';
   await roomDoc.save();
 
-  return tenant.toJSON();
+  return buildTenantResponse(tenant);
 };
 
 /**
@@ -69,7 +91,9 @@ export const getTenants = async (ownerId, filters = {}) => {
     ];
   }
 
+  // Exclude the embedded photo buffer, it is served from /tenants/:id/photo
   const tenants = await Tenant.find(query)
+    .select('-photo.data')
     .sort({ joiningDate: -1 })
     .lean();
 
@@ -89,7 +113,7 @@ export const getTenants = async (ownerId, filters = {}) => {
     })
   );
 
-  return populatedTenants;
+  return populatedTenants.map(buildTenantResponse);
 };
 
 /**
@@ -125,13 +149,13 @@ export const getTenantById = async (tenantId, ownerId) => {
     },
   });
 
-  return populatedTenant.toJSON();
+  return buildTenantResponse(populatedTenant);
 };
 
 /**
- * Update tenant
+ * Update tenant. `photoPayload` replaces the tenant photo when provided.
  */
-export const updateTenant = async (tenantId, ownerId, updateData) => {
+export const updateTenant = async (tenantId, ownerId, updateData, photoPayload) => {
   const tenant = await Tenant.findById(tenantId);
   if (!tenant) {
     throw new ApiError(404, 'Tenant not found');
@@ -168,8 +192,10 @@ export const updateTenant = async (tenantId, ownerId, updateData) => {
     if (updateData.status !== undefined) tenant.status = updateData.status;
   }
 
+  if (photoPayload) tenant.photo = photoPayload;
+
   await tenant.save();
-  return tenant.toJSON();
+  return buildTenantResponse(tenant);
 };
 
 /**
@@ -204,7 +230,7 @@ export const moveOutTenant = async (tenantId, ownerId) => {
   room.status = 'VACANT';
   await room.save();
 
-  return tenant.toJSON();
+  return buildTenantResponse(tenant);
 };
 
 /**

@@ -1,23 +1,9 @@
-import multer from 'multer';
 import { asyncHandler } from '../utils/errorHandler.js';
 import { sendSuccess } from '../utils/response.js';
 import { tenantService } from '../services/index.js';
 import { createTenantSchema, updateTenantSchema } from '../validators/index.js';
 import { Tenant, Room, Property } from '../models/index.js';
-import { config } from '../config/index.js';
-
-/* ---------------- Multer (memory storage -> Buffer stored in MongoDB) ---------------- */
-
-const photoUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: config.upload.maxFileSize },
-  fileFilter: (req, file, cb) => {
-    if (!config.upload.allowedImageTypes.includes(file.mimetype)) {
-      return cb(new Error(`Invalid file type. Allowed: ${config.upload.allowedImageTypes.join(', ')}`));
-    }
-    cb(null, true);
-  },
-}).single('photo');
+import { extractTenantPhoto, toPhotoPayload } from '../utils/tenantPhoto.js';
 
 /**
  * GET /api/tenants
@@ -36,48 +22,25 @@ export const getTenants = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/tenants
- * - multipart/form-data: optional "photo" file stored as Buffer in MongoDB
- * - application/json: no photo
+ * - multipart/form-data: optional single photo ("photo", "image", ...)
+ * - application/json: the photo may also be sent as a base64 data URL
+ *
+ * The photo is stored as a Buffer inside the tenant document in MongoDB.
  */
 export const createTenant = asyncHandler(async (req, res) => {
-  const contentType = req.headers['content-type'] || '';
+  const body = { ...req.body };
+  if (body.leavingDate === '') delete body.leavingDate;
 
-  if (!contentType.includes('multipart/form-data')) {
-    const validatedData = createTenantSchema.parse(req.body);
-    const tenant = await tenantService.createTenant(req.user.id, validatedData);
-    return sendSuccess(res, tenant, 201, 'Tenant created');
-  }
+  const { data, photo } = extractTenantPhoto(body, req.files);
 
-  // Multipart with optional photo
-  photoUpload(req, res, async (err) => {
-    if (err) {
-      return res.status(400).json({ success: false, message: err.message || 'File upload failed' });
-    }
+  const validatedData = createTenantSchema.parse(data);
+  const tenant = await tenantService.createTenant(
+    req.user.id,
+    validatedData,
+    toPhotoPayload(photo)
+  );
 
-    try {
-      const body = { ...req.body };
-      if (body.leavingDate === '') delete body.leavingDate;
-
-      let photoPayload;
-      if (req.file) {
-        photoPayload = {
-          data: req.file.buffer,
-          mimeType: req.file.mimetype,
-          originalName: req.file.originalname,
-          size: req.file.size,
-          uploadedAt: new Date(),
-        };
-      }
-
-      const validatedData = createTenantSchema.parse(body);
-      const tenant = await tenantService.createTenant(req.user.id, validatedData, photoPayload);
-      return sendSuccess(res, tenant, 201, 'Tenant created');
-    } catch (e) {
-      const statusCode = e.statusCode || (e.name === 'ZodError' ? 400 : 500);
-      const message = e.name === 'ZodError' ? e.issues?.[0]?.message : e.message;
-      return res.status(statusCode).json({ success: false, message });
-    }
-  });
+  sendSuccess(res, tenant, 201, 'Tenant created');
 });
 
 /**
@@ -112,10 +75,18 @@ export const getTenantById = asyncHandler(async (req, res) => {
 
 /**
  * PUT /api/tenants/:id
+ * Accepts JSON or multipart/form-data (multipart can replace the tenant photo).
  */
 export const updateTenant = asyncHandler(async (req, res) => {
-  const validatedData = updateTenantSchema.parse(req.body);
-  const tenant = await tenantService.updateTenant(req.params.id, req.user.id, validatedData);
+  const { data, photo } = extractTenantPhoto({ ...req.body }, req.files);
+
+  const validatedData = updateTenantSchema.parse(data);
+  const tenant = await tenantService.updateTenant(
+    req.params.id,
+    req.user.id,
+    validatedData,
+    toPhotoPayload(photo)
+  );
   sendSuccess(res, tenant, 200, 'Tenant updated');
 });
 
